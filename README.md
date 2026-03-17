@@ -1,87 +1,97 @@
-# Rate Limiter (Go)
+## Rate Limiter (Go)
 
-Middleware em **Go** para controlar o fluxo de requisições de um serviço web. O sistema limita o tráfego com base no **IP do solicitante** ou em um **token de acesso**, usando **Redis** para persistência e orquestração.
+Middleware em **Go** para controlar o fluxo de requisições de um serviço web.  
+O sistema limita o tráfego com base no **IP do solicitante** ou em um **token de acesso**, usando **Redis** para persistência e orquestração.
 
----
-
-## Objetivo
-
-Desenvolver um **Rate Limiter** que funcione como **middleware**, capaz de:
-
-- Limitar requisições por **endereço IP** ou por **token** (`API_KEY`).
-- Persistir contagem e janelas de tempo no **Redis** (via Docker).
-- Manter arquitetura extensível (padrão **Strategy**) para trocar o backend de persistência no futuro.
+> O enunciado completo do desafio está em `README_CHALLENGE.md`.  
+> Este `README.md` descreve **a implementação deste repositório**: como ela funciona, como configurar e como executar.
 
 ---
 
-## Regras de negócio (critérios de limitação)
+### Arquitetura da solução
 
-### Limitação por IP
+- **`config`**: leitura das variáveis de ambiente (`.env`) em uma struct `Config`.
+- **`internal/limiter`**:
+  - `store.go`: interface `Store` (Strategy) para persistência.
+  - `redis_store.go`: implementação `RedisStore` usando Redis.
+  - `limiter.go`: regra de negócio do rate limit (IP, token, precedência, bloqueio).
+- **`internal/middleware`**:
+  - `ratelimit.go`: middleware HTTP (`net/http`) que extrai IP/token, chama o limiter e decide entre 200/429.
+- **`internal/handler`**:
+  - `handler.go`: rotas simples para exercício (`/healthz`, `/api/v1/example`).
+- **`cmd/server`**:
+  - `main.go`: fio da aplicação → carrega config, cria RedisStore, instancia Limiter, aplica middleware e sobe o servidor HTTP.
 
-Restringe o número máximo de **requisições por segundo** recebidas de um único endereço IP.
+Pontos importantes:
 
-### Limitação por token
-
-Restringe o número máximo de **requisições por segundo** com base em um token de acesso único.
-
-- **Header:** o token é enviado como `API_KEY: <TOKEN>`.
-
-### Precedência (regra de ouro)
-
-As configurações do **token** prevalecem sobre as do **IP**.
-
-**Exemplo:** limite global por IP = 10 req/s; um token específico = 100 req/s → o sistema aplica **100 req/s** para requisições com esse token.
-
----
-
-## Comportamento em caso de bloqueio
-
-Quando o limite for excedido (por IP ou por token):
-
-| Aspecto | Comportamento |
-|--------|----------------|
-| **HTTP** | Status **429** imediato. |
-| **Corpo** | Exatamente: `you have reached the maximum number of requests or actions allowed within a certain time frame` |
-| **Tempo de bloqueio** | IP ou token infrator fica bloqueado por um período **configurável** (ex.: 5 minutos). Enquanto bloqueado, novas requisições são **rejeitadas**. |
+- A **regra de negócio** do limiter (IP/token, precedência, bloqueio) está isolada no pacote `internal/limiter`.
+- O **middleware** em `internal/middleware` não conhece detalhes de Redis; ele apenas orquestra a chamada ao limiter.
+- A **Strategy** de persistência é abstraída pela interface `Store`, permitindo trocar Redis por outro backend no futuro.
 
 ---
 
-## Requisitos técnicos e arquitetura
+### Configuração via variáveis de ambiente
 
-### Middleware
+As configurações são lidas pela função `config.Load()` a partir das envs (e do `.env`, se presente).  
+Há um arquivo `.env.example` na raiz do projeto com os valores padrão.
 
-A lógica do rate limiter é um **middleware** que envolve o servidor HTTP.
+**Variáveis de ambiente usadas:**
 
-### Persistência (Redis)
+| Variável        | Descrição                                                   | Default       |
+|-----------------|-------------------------------------------------------------|---------------|
+| `HTTP_PORT`     | Porta HTTP da aplicação                                     | `8080`        |
+| `RATE_LIMIT_IP` | Limite de requisições por segundo por **IP**               | `10`          |
+| `RATE_LIMIT_TOKEN` | Limite de requisições por segundo por **token** (`API_KEY`) | `100`     |
+| `BLOCK_DURATION`| Duração do bloqueio em **segundos** após ultrapassar limite | `300` (5 min) |
+| `REDIS_HOST`    | Host do Redis                                               | `redis`       |
+| `REDIS_PORT`    | Porta do Redis                                              | `6379`        |
+| `REDIS_DB`      | Banco (DB) numérico do Redis                                | `0`           |
+| `REDIS_PASSWORD`| Senha do Redis (se houver)                                  | vazio         |
 
-Contagem e controle de tempo ficam no **Redis** (imagem Docker no `docker-compose`).
+**Passo a passo:**
 
-### Design pattern: Strategy
+1. Copie o arquivo de exemplo:
 
-- Implementar **Strategy** para a camada de persistência.
-- **Redis é obrigatório** neste desafio, mas a arquitetura deve permitir trocar por outro storage **apenas trocando a implementação da estratégia**.
+   ```bash
+   cp .env.example .env
+   ```
 
-### Desacoplamento
-
-A **regra de negócio** do limiter fica **separada** da **lógica do middleware** (ex.: middleware só orquestra; o limiter aplica regras).
-
-### Configuração
-
-Tudo via **variáveis de ambiente** e/ou **arquivo `.env` na raiz**, por exemplo:
-
-- Limite máximo de requisições por segundo (IP e/ou token, conforme seu modelo).
-- Tempo de bloqueio após excesso.
-- Parâmetros de conexão com o Redis.
-
-*(Documente no próprio repositório os nomes exatos das variáveis assim que implementar.)*
+2. Ajuste os valores conforme necessidade (limites, duração de bloqueio, host/porta do Redis).
 
 ---
 
-## Como executar o projeto
+### Regras de negócio implementadas
 
-O avaliador deve conseguir subir aplicação e testes usando **apenas Docker / Docker Compose**.
+- **Limitação por IP**:
+  - Para requisições **sem header `API_KEY`**, o limiter utiliza o limite configurado em `RATE_LIMIT_IP`.
+  - A contagem é por janela de **1 segundo** por IP.
 
-### Subir aplicação + Redis
+- **Limitação por token**:
+  - Para requisições com header `API_KEY: <TOKEN>`, o limiter utiliza o limite configurado em `RATE_LIMIT_TOKEN`.
+  - A contagem é por janela de **1 segundo** por token.
+
+- **Precedência token > IP**:
+  - Se um token estiver presente, **sempre** prevalece o limite do token (`RATE_LIMIT_TOKEN`), independentemente do limite para o IP de origem.
+
+- **Persistência em Redis**:
+  - Contadores de requisições (por IP ou token) e flags de bloqueio são armazenados no Redis via `RedisStore` (Strategy `Store`).
+  - Chaves típicas:
+    - Contagem: `rate:ip:<ip>` ou `rate:token:<token>`.
+    - Bloqueio: `block:ip:<ip>` ou `block:token:<token>`.
+
+- **Bloqueio e resposta HTTP**:
+  - Quando o limite é ultrapassado, o limiter grava uma chave de bloqueio com TTL = `BLOCK_DURATION`.
+  - Enquanto o IP/token estiver bloqueado, novas requisições são negadas imediatamente.
+  - O middleware responde com:
+    - **HTTP 429 (Too Many Requests)**.
+    - Corpo **exato**:  
+      `you have reached the maximum number of requests or actions allowed within a certain time frame`
+
+---
+
+### Como executar o projeto (Docker / Docker Compose)
+
+> Pré-requisitos: Docker e Docker Compose instalados.
 
 Na raiz do repositório (onde estão `docker-compose.yaml` e `Dockerfile`):
 
@@ -89,65 +99,100 @@ Na raiz do repositório (onde estão `docker-compose.yaml` e `Dockerfile`):
 docker compose up --build
 ```
 
-A aplicação deve escutar na porta **8080** (conforme especificação).
+- Isso irá:
+  - Subir um container `redis`.
+  - Buildar a imagem da aplicação Go.
+  - Subir o container `app` escutando na porta **8080**.
+
+**Endpoints:**
+
+- `GET /healthz` → checagem de saúde simples.
+- `GET /api/v1/example` → endpoint protegido pelo middleware de rate limit.
+
+Exemplo rápido com `curl`:
+
+```bash
+curl http://localhost:8080/healthz
+curl http://localhost:8080/api/v1/example
+```
+
+---
 
 ### Testes automatizados
 
-Exemplo comum (ajuste ao comando real do seu `Dockerfile`/`compose`):
+Os testes podem ser executados diretamente com Go ou via Docker Compose.
+
+**Go (local):**
+
+```bash
+go test ./...
+```
+
+**Via Docker Compose:**
 
 ```bash
 docker compose run --rm app go test ./...
 ```
 
-Ou o target que você expuser no `docker-compose` para rodar os testes.
+Os testes cobrem:
+
+- `internal/limiter`:
+  - Limite por IP e bloqueio.
+  - Precedência token > IP.
+- `internal/middleware`:
+  - Resposta HTTP 429 com corpo exato quando o limite é estourado.
+- `internal/handler`:
+  - Comportamento dos handlers (`/healthz`, `/api/v1/example`).
+- `config`:
+  - Uso de valores padrão e leitura correta das envs.
 
 ---
 
-## Testes esperados
+### Strategy de persistência (trocando Redis por outro backend)
 
-Incluir testes que demonstrem:
-
-1. **Eficácia** do limiter (429 após ultrapassar o limite, bloqueio, etc.).
-2. **Precedência token > IP** (token com limite maior que o IP deve se comportar conforme o limite do token).
-
----
-
-## Como configurar o limiter
-
-1. Copie `.env.example` para `.env` (se existir) ou defina as variáveis no `docker-compose.yaml`.
-2. Ajuste limites por segundo, tempo de bloqueio e Redis conforme documentado nas envs do projeto.
-3. Para **tokens com limites diferentes**, descreva no README como cadastrar/mapa token → limite (se aplicável ao seu desenho).
+- A interface `Store` em `internal/limiter/store.go` define as operações necessárias:
+  - `Increment(key string, windowSeconds int) (int64, error)`
+  - `IsBlocked(key string) (bool, error)`
+  - `Block(key string, duration time.Duration) error`
+- A implementação atual (`RedisStore`) em `internal/limiter/redis_store.go` usa Redis.
+- Para trocar o backend de persistência:
+  1. Crie uma nova struct que implemente `Store` (por ex., `MemoryStore`, `SQLStore`).
+  2. No `main.go`, substitua a criação de `RedisStore` pela nova implementação.
+  3. Não é necessário alterar o `Limiter` nem o middleware.
 
 ---
 
-## Como alterar a estratégia de persistência
+### Testes manuais (curl / Postman)
 
-1. Defina uma **interface** (Strategy) usada pelo domínio do limiter (ex.: incrementar contador, checar bloqueio, TTL).
-2. Implemente a estratégia **Redis** atual.
-3. Para outro backend, crie uma nova struct que implemente a mesma interface e injete no middleware/limiter via composição ou factory — **sem alterar a regra de negócio** do limiter.
+Além dos testes automatizados, você pode validar o comportamento via:
+
+- **Collection Postman**:
+  - Arquivo: `collection/rate-limiter.postman_collection.json`.
+  - Contém requisições para `/healthz`, `/api/v1/example` (com e sem `API_KEY`).
+
+- **Exemplo de cenário com `curl` (limitação por IP)**:
+
+  ```bash
+  for i in {1..20}; do
+    echo "Request $i:"
+    curl -is -w "HTTP %{http_code}\n" -o /dev/null "http://localhost:8080/api/v1/example"
+  done
+  ```
+
+- **Exemplo de cenário com `curl` (limitação por token)**:
+
+  ```bash
+  for i in {1..20}; do
+    echo "Request $i:"
+    curl -is -w "HTTP %{http_code}\n" -o /dev/null \
+      -H "API_KEY: my-token" \
+      "http://localhost:8080/api/v1/example"
+  done
+  ```
 
 ---
 
-## Entregáveis
-
-| Item | Descrição |
-|------|-----------|
-| **Código fonte** | Implementação completa do rate limiter. |
-| **Dockerfile** | Build da aplicação Go. |
-| **docker-compose.yaml** | Sobe a app na porta **8080** e o **Redis**. |
-| **README** | Configuração, estratégias, execução (este documento + detalhes das envs após implementação). |
-| **Testes** | Cobrindo limiter e precedência token > IP. |
-
----
-
-## Regras de entrega
-
-- **Repositório único:** apenas este projeto.
-- **Branch principal:** todo o código na branch **`main`**.
-- **Execução:** rodar projeto e testes com **Docker / Docker Compose** apenas.
-
----
-
-## Licença
+### Licença
 
 Defina a licença conforme a política do curso ou da sua organização.
+

@@ -1,0 +1,63 @@
+{
+  "info": {
+    "name": "Rate Limiter - Validation",
+    "_postman_id": "00000000-0000-0000-0000-000000000000",
+    "description": "Collection para validar o middleware de rate limiting (IP e token) do projeto rate-limiter.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Healthcheck",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/healthz",
+          "host": ["{{base_url}}"],
+          "path": ["healthz"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Exemplo - sem token (IP)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/example",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "example"]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Exemplo - com token (API_KEY)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "API_KEY",
+            "value": "my-token",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/example",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "example"]
+        }
+      },
+      "response": []
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    }
+  ]
+}
+
