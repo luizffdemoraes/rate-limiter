@@ -190,9 +190,3 @@ Além dos testes automatizados, você pode validar o comportamento via:
   done
   ```
 
----
-
-### Licença
-
-Defina a licença conforme a política do curso ou da sua organização.
-
